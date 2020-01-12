@@ -1,28 +1,30 @@
-import sewpy
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy import misc
-from scipy.ndimage import rotate
-from astropy.io import fits
-import sys
-import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Ellipse, Rectangle
+from scipy.ndimage import rotate
+import matplotlib.pyplot as plt
+from astropy.io import fits
+from scipy import optimize,misc
+import numpy as np
+import warnings
+import timeit
+import sewpy
 import copy
-import os.path
+import sys
 import os
-from scipy import optimize
 
-galname = '1440'
-band = 'K'
-extenstion = 1
-image_name = galname+'_'+band+'.fits'
+warnings.filterwarnings("ignore")
+start = timeit.default_timer()
 
-def rot_image(image, xy, angle):
-    im_rot = rotate(image,angle,reshape=False)
+print
+print "FINDING GALAXY AND ELIMINATION OF SURROUNDING OBJECTS"
+print "-----------------------------------------------------"
+
+def rot_image(image, xy, pos_angle):
+    print "IMAGE ROTATION"
+    im_rot = rotate(image, pos_angle, reshape=False)
     org_center = (np.array(image.shape[:2][::-1])-1)/2.
     rot_center = (np.array(im_rot.shape[:2][::-1])-1)/2.
     org = xy.T-org_center.T
-    a = np.deg2rad(angle)
+    a = np.deg2rad(pos_angle)
     new = np.array([org[:,0]*np.cos(a)+org[:,1]*np.sin(a),
             -org[:,0]*np.sin(a)+org[:,1]*np.cos(a)])
     return im_rot, (new.T+rot_center.T).T
@@ -98,55 +100,79 @@ def replace_region(img, xc, yc, r, x1, y1, br_gal):
         img_tmp = img[xc-r:xc+r+1,yc-r:yc+r+1]
         img_tmp = in_ellipse(np.array([r,r]),r,r,img_tmp)
         img = in_ellipse(np.array([xc,yc]),r,r,img)
-    return img           
-                
-                 
-sew = sewpy.SEW(params=['X_IMAGE', 'Y_IMAGE', 'FLUX_RADIUS(3)', 'THETA_IMAGE','ELLIPTICITY','A_IMAGE','B_IMAGE','DISK_THETA_IMAGE'],
-        config={'DETECT_MINAREA':5, 'PHOT_FLUXFRAC':'0.5, 1.0, 1.0'})
-str_out = sew(image_name)
-obj_tab = str_out['table']
-print obj_tab
+    return img  
+
+def sextractor(image_name):
+    sew = sewpy.SEW(params=['X_IMAGE', 'Y_IMAGE', 'FLUX_RADIUS(3)', 'THETA_IMAGE','ELLIPTICITY','A_IMAGE',
+        'B_IMAGE','DISK_THETA_IMAGE'], config={'DETECT_MINAREA':5, 'PHOT_FLUXFRAC':'0.5, 1.0, 1.0'})
+    str_out = sew(image_name)
+    obj_tab = str_out['table']
+    return obj_tab
+
+def read_image(catalog, survey, galname, band, extension):
+    print "READING THE IMAGE"
+    image_file = fits.open('./'+catalog+galname+'/'+catalog+galname+'_'+survey+'_'+band+'.fits')
+    header = image_file[extension].header
+    hdu = image_file[extension]
+    image = hdu.data
+    size = image.shape
+    image_orig = copy.copy(image)
+    return image, image_orig, size, header         
+
+def rotation_plot(image, data_rot, catalog, galname):
+    llim = np.median(image)
+    ulim = np.mean(image[(image>np.mean(image)+1*np.std(image)) &
+        (image<np.mean(image)+3*np.std(image))])
+    fig, ax = plt.subplots(1,2)
+    ax[0].imshow(image,vmin=llim,vmax=ulim)
+    ax[1].imshow(data_rot,vmin=llim,vmax=ulim)
+    ax[0].set_title(catalog.upper()+galname)
+    ax[1].set_title(catalog.upper()+galname+' rotated')
+    plt.show(block=False)
+
+catalog = 'fgc'
+survey = 'sdss'
+galname = '1440'
+band = 'r'
+extension = 0
+image_name = './'+catalog+galname+'/'+catalog+galname+'_'+survey+'_'+band+'_bg.fits'
+
+image, image_orig, size, header = read_image(catalog, survey, galname, band, extension)
+
+obj_tab = sextractor(image_name)
 x_image = np.float64(obj_tab['X_IMAGE'])
 y_image = np.float64(obj_tab['Y_IMAGE'])
 flux_rad_0 = np.float64(obj_tab['FLUX_RADIUS'])
 flux_rad_1 = np.float64(obj_tab['FLUX_RADIUS_1'])
 flux_rad_2 = np.float64(obj_tab['FLUX_RADIUS_2'])
-theta = np.float64(obj_tab['DISK_THETA_IMAGE'])
-ellipt = np.float64(obj_tab['ELLIPTICITY'])
-a = np.float64(obj_tab['A_IMAGE'])
-b = np.float64(obj_tab['B_IMAGE'])
-aa = list(a)
+pos_angle = np.float64(obj_tab['DISK_THETA_IMAGE'])
+ellipticity = np.float64(obj_tab['ELLIPTICITY'])
+a_axis = np.float64(obj_tab['A_IMAGE'])
+b_axis = np.float64(obj_tab['B_IMAGE'])
+a_axis_list = list(a_axis)
 
-ss = list(sorted(aa, reverse=True))
-ind_gal = [aa.index(ss[i]) for i in range(len(aa))][0]
-a = a[ind_gal]
-b = b[ind_gal]
-
-image_g = fits.open(image_name)
-hdu = image_g[extension]
-image = hdu.data
+a_axis_sort = list(sorted(a_axis_list, reverse=True))
+ind_gal = [a_axis_list.index(a_axis_sort[i]) for i in range(len(a_axis_list))][0]
+a_axis = a_axis[ind_gal]
+b_axis = b_axis[ind_gal]
 
 xx, yy = x_image, y_image
 x0, y0 = x_image[ind_gal], y_image[ind_gal]
-angle = theta[ind_gal]
+pos_angle = pos_angle[ind_gal]
 
-data_rot, (xx1,yy1) = rot_image(image, np.array([xx,yy]), angle)
+data_rot, (xx1,yy1) = rot_image(image, np.array([xx,yy]), pos_angle)
 x1 = xx1[ind_gal]
 y1 = yy1[ind_gal]
-fig, ax = plt.subplots(1,2)
-ax[0].imshow(image,vmin=5800,vmax=6500)
-ax[1].imshow(data_rot,vmin=5800,vmax=6500)
-ax[0].set_title('FGC'+galname)
-ax[1].set_title('FGC'+galname+' rotated')
-plt.show(block=False)
+
+rotation_plot(image, data_rot, catalog, galname)
 nb = 12
 na = 5
-data = data_rot[int(y1-b*nb):int(y1+b*nb)+1,int(x1-a*na):int(x1+a*na)+1]
+data = data_rot[int(y1-b_axis*nb):int(y1+b_axis*nb)+1,int(x1-a_axis*na):int(x1+a_axis*na)+1]
 size_data = data.shape
-yy1 -= int(y1-b*nb)
-xx1 -= int(x1-a*na)
-y1 -= int(y1-b*nb)
-x1 -= int(x1-a*na)
+yy1 -= int(y1-b_axis*nb)
+xx1 -= int(x1-a_axis*na)
+y1 -= int(y1-b_axis*nb)
+x1 -= int(x1-a_axis*na)
 
 ####################SELECT OBJECTS CLOSE TO THE GALAXY##################
 #################EXCLUDE THE GALAXY ITSELF FROM THIS LIST###############
@@ -167,7 +193,7 @@ y_obj.pop(ind)
 
 ################EXCLUDE OBJECTS IN THE GALAXY PLANE####################
 #############THEY ARE PROBABLY THE STARFORMATION REGIONS###############
-ind_plane = np.where((abs(x_obj-x1)<=2*a) & (abs(y_obj-y1)<=b/2))
+ind_plane = np.where((abs(x_obj-x1)<=2*a_axis) & (abs(y_obj-y1)<=b_axis/2))
 if ind_plane[0].size != 0:
     for i in range(len(ind_plane[0])):
         x_obj.pop(ind_plane[0][i])
@@ -179,7 +205,7 @@ if ind_plane[0].size != 0:
 data_orig = copy.copy(data)
 #################CALCULATE MEAN SURFACE BRIGHNESS#####################
 #######################OF EACH CLOSE OBJECT###########################
-surf_br_gal = surf_brightness(data,np.array([x1,y1]),np.array([a,b]))
+surf_br_gal = surf_brightness(data,np.array([x1,y1]),np.array([a_axis, b_axis]))
 surf_br = np.zeros((len(x_obj),1))
 rad_obj = np.zeros((len(x_obj),1))
 for i in range(len(x_obj)):
@@ -229,9 +255,9 @@ for i in range(len(x_obj)):
     
 
 fig, ax = plt.subplots(2,1)
-ax[0].imshow(data_orig,vmin=5950,vmax=6400)
-ax[1].imshow(data,vmin=5950,vmax=6400)
-ax[0].set_title('FGC'+galname)
+ax[0].imshow(data_orig,vmin=0,vmax=0.3)
+ax[1].imshow(data,vmin=0,vmax=0.3)
+ax[0].set_title(catalog.upper()+galname)
 for i in range(len(x_obj)):
     #    sq = plt.Rectangle((x_obj[i]-rad_obj_30[i],y_obj[i]-rad_obj_30[i]),2*rad_obj_30[i],2*rad_obj_30[i],color='r',fill=False)
     circ = plt.Circle((x_obj[i],y_obj[i]),rad_obj_100[i],color='r',fill=False)
@@ -246,23 +272,19 @@ plt.show(block=False)
 if os.path.exists(galname+'_'+band+'_2.fits'):
     os.remove(galname+'_'+band+'_2.fits')
 data2 = copy.copy(data)
-data2[int(y1-2*b):int(y1+2*b),int(x1-4*a):int(x1+4*a)] = 0
+data2[int(y1-2*b_axis):int(y1+2*b_axis),int(x1-4*a_axis):int(x1+4*a_axis)] = 0
 fits.writeto(galname+'_'+band+'_2.fits',data2)
 
-sew = sewpy.SEW(params=['X_IMAGE', 'Y_IMAGE', 'FLUX_RADIUS(3)', 'THETA_IMAGE','ELLIPTICITY','A_IMAGE','B_IMAGE','DISK_THETA_IMAGE'],
-        config={'DETECT_MINAREA':5, 'PHOT_FLUXFRAC':'0.8, 0.9, 1.0'})
-str_out = sew(galname+'_'+band+'_2.fits')
-obj_tab = str_out['table']
-#print obj_tab
+obj_tab = sextractor(galname+'_'+band+'_2.fits')
 x_image = np.float64(obj_tab['X_IMAGE'])
 y_image = np.float64(obj_tab['Y_IMAGE'])
-a = np.float64(obj_tab['A_IMAGE'])
-b = np.float64(obj_tab['B_IMAGE'])
+a_axis = np.float64(obj_tab['A_IMAGE'])
+b_axis = np.float64(obj_tab['B_IMAGE'])
 surf_br2 = np.zeros((len(x_image),1))
 for i in range(len(x_image)):
     surf_br2[i] = surf_brightness(data2,np.array([x_image[i],y_image[i]]),[1,1])
 ind_max = np.where(surf_br2 == np.max(surf_br2))[0][0]
-rad_max = (a[ind_max]+b[ind_max])/2
+rad_max = (a_axis[ind_max]+b_axis[ind_max])/2
 
 ylim11 = max([int(y_image[ind_max]-rad_max+1),0])
 ylim12 = min([int(y_image[ind_max]+rad_max+1),size_data[0]])
@@ -280,7 +302,7 @@ np.flipud(data[ylim21:ylim22,int(x_image[ind_max]-rad_max+1):int(x_image[ind_max
 fig, ax = plt.subplots(2,1)
 ax[0].imshow(data_orig,vmin=0,vmax=0.3)
 ax[1].imshow(data,vmin=0,vmax=0.3)
-ax[0].set_title('FGC'+galname)
+ax[0].set_title(catalog.upper()+galname)
 for i in range(len(x_obj)):
     #    sq = plt.Rectangle((x_obj[i]-rad_obj_30[i],y_obj[i]-rad_obj_30[i]),2*rad_obj_30[i],2*rad_obj_30[i],color='r',fill=False)
     circ = plt.Circle((x_obj[i],y_obj[i]),rad_obj_100[i],color='r',fill=False)
